@@ -1,0 +1,5 @@
+{
+  "name": "KinoGraph: Video to Graphic Novel",
+  "description": "Upload a video and use Gemini's multimodal reasoning and image generation to transmute it into a stylized, downloadable graphic novel.",
+  "requestFramePermissions": []
+}
