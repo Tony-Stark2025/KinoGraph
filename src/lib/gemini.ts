@@ -29,7 +29,16 @@ export async function analyzeVideo(base64Video: string, mimeType: string): Promi
           mimeType: mimeType,
         }
       },
-      "You are a master storyboard director and editor. Watch this video and extract the 4 to 6 most critical narrative beats, highlights, or emotional peaks. For each beat, provide the exact timestamp in seconds, the most impactful quote spoken (or a dramatic, comic-book style caption if there is no speech), and a brief visual description of the scene. Additionally, suggest 3 distinct visual aesthetic styles (e.g., Cyberpunk, Noir, Vintage Manga, Watercolor) that would perfectly fit this video if it were adapted into a graphic novel. Provide a 'promptModifier' for each style that can be appended to an image generation prompt to enforce that style. Finally, provide a catchy, contextual 'title' for this graphic novel based on the video's overarching narrative."
+      `You are a master storyboard director and editor. Watch this video and extract the core narrative beats to adapt it into a graphic novel. 
+      
+      CRITICAL GUARDRAILS:
+      1. DURATION: Extract between 2 to 6 beats depending on the video length (e.g., 2 beats for a 5-second clip, up to 6 for longer clips). Do not force 6 beats on a micro-short.
+      2. TIMESTAMPS: Provide highly precise timestamps (using decimals, e.g., 12.4). Ensure the timestamp lands on a frame of peak clarity and emotion, avoiding heavy motion blur.
+      3. QUOTES & AUDIO: If there is speech, extract the most impactful quote (translate to English if foreign). If there is NO speech (e.g., a mime, ticking clock, silent action), write a dramatic, comic-book-style narration box (e.g., '[The silence is deafening...]').
+      4. STATIC VISUALS: If the video is visually boring (e.g., a static podcast, a black screen), DO NOT just describe 'a man talking'. Invent dynamic, comic-book-style camera angles and framing based on the emotion of the audio (e.g., 'Extreme close-up on eyes, heavy shadows').
+      5. SPLIT-SCREENS: If it's a split-screen (e.g., gameplay + podcast), focus the visual description entirely on the primary human subject.
+      
+      Additionally, suggest 3 distinct visual aesthetic styles (e.g., Cyberpunk, Noir, Vintage Manga) that fit the vibe. Provide a 'promptModifier' for each style. Finally, provide a catchy, contextual 'title' for this graphic novel.`
     ],
     config: {
       responseMimeType: "application/json",
@@ -42,9 +51,9 @@ export async function analyzeVideo(base64Video: string, mimeType: string): Promi
             items: {
               type: Type.OBJECT,
               properties: {
-                timestamp: { type: Type.NUMBER, description: "Exact timestamp in seconds" },
-                quote: { type: Type.STRING, description: "The exact quote spoken, or a dramatic caption" },
-                description: { type: Type.STRING, description: "Visual description of the scene" }
+                timestamp: { type: Type.NUMBER, description: "Exact timestamp in seconds (e.g., 14.2)" },
+                quote: { type: Type.STRING, description: "The exact quote spoken, or a dramatic narration box if silent" },
+                description: { type: Type.STRING, description: "Dynamic visual description of the scene and camera angle" }
               },
               required: ["timestamp", "quote", "description"]
             }
@@ -93,7 +102,13 @@ export async function stylizeFrame(base64Image: string, stylePromptModifier: str
           },
         },
         {
-          text: `Redraw this image as a high-quality graphic novel panel. Maintain the exact original composition, subjects, and camera angle, but apply this style heavily: ${stylePromptModifier}`,
+          text: `Redraw this image as a high-quality graphic novel panel. Maintain the original composition and subjects, but apply this style heavily: ${stylePromptModifier}. 
+          
+          CRITICAL GUARDRAILS:
+          1. IGNORE AND REMOVE all text, subtitles, watermarks, UI elements, minimaps, or presentation slides. Do not attempt to draw letters or alien runes. Replace text areas with thematic background elements.
+          2. If there is a prominent human face, maintain their general likeness and expression, applying the style primarily to the lighting, shading, and environment.
+          3. Blend away split-screens or distracting secondary footage into a cohesive background.
+          4. If the input image is mostly blank, dark, or abstract, use the style modifier to hallucinate a beautiful, thematic scene that fits the aesthetic.`,
         },
       ],
     },

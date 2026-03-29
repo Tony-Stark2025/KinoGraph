@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { Upload, Film, Wand2, Download, Loader2, Image as ImageIcon, ChevronRight } from 'lucide-react';
+import { Upload, Film, Wand2, Download, Loader2, Image as ImageIcon, ChevronRight, MessageSquare, X, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeVideo, stylizeFrame, VideoAnalysis, StoryBeat } from './lib/gemini';
 import { extractFrame, fileToBase64 } from './lib/video';
@@ -21,6 +21,44 @@ export default function App() {
   
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Feedback Modal State
+  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [isSendingFeedback, setIsSendingFeedback] = useState(false);
+  const [feedbackSuccess, setFeedbackSuccess] = useState(false);
+
+  const handleSendFeedback = async () => {
+    if (!feedbackText.trim()) return;
+    
+    setIsSendingFeedback(true);
+    
+    try {
+      const response = await fetch('/api/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ feedback: feedbackText })
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to send feedback');
+      }
+      
+      setFeedbackSuccess(true);
+      setTimeout(() => {
+        setIsFeedbackOpen(false);
+        setFeedbackText('');
+        setFeedbackSuccess(false);
+      }, 2500);
+    } catch (err: any) {
+      console.error(err);
+      alert(err.message || "Failed to send feedback. Please check server configuration.");
+    } finally {
+      setIsSendingFeedback(false);
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -376,6 +414,91 @@ export default function App() {
 
         </AnimatePresence>
       </main>
+
+      {/* Feedback Button */}
+      <button
+        onClick={() => setIsFeedbackOpen(true)}
+        className="fixed bottom-6 right-6 bg-zinc-800 hover:bg-zinc-700 text-white rounded-full p-4 shadow-2xl border border-zinc-700 transition-all hover:scale-105 z-40 flex items-center gap-2 group"
+      >
+        <MessageSquare className="w-5 h-5 text-indigo-400 group-hover:text-indigo-300" />
+        <span className="font-medium hidden md:inline pr-2">Feedback</span>
+      </button>
+
+      {/* Feedback Modal */}
+      <AnimatePresence>
+        {isFeedbackOpen && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 w-full max-w-md shadow-2xl relative"
+            >
+              <button
+                onClick={() => setIsFeedbackOpen(false)}
+                className="absolute top-6 right-6 text-zinc-500 hover:text-white transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+              
+              <div className="flex items-center gap-3 mb-2">
+                <div className="p-2 bg-indigo-500/20 rounded-lg">
+                  <MessageSquare className="w-5 h-5 text-indigo-400" />
+                </div>
+                <h3 className="text-xl font-bold text-white">Send Feedback</h3>
+              </div>
+              
+              {feedbackSuccess ? (
+                <motion.div 
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="flex flex-col items-center justify-center py-8"
+                >
+                  <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mb-4">
+                    <Check className="w-8 h-8 text-green-400" />
+                  </div>
+                  <h4 className="text-white font-bold text-xl">Feedback Sent!</h4>
+                  <p className="text-zinc-400 text-sm mt-2 text-center">
+                    Thank you for helping improve KinoGraph.
+                  </p>
+                </motion.div>
+              ) : (
+                <>
+                  <p className="text-zinc-400 text-sm mb-6">
+                    What do you think of KinoGraph? Found a bug or have a feature request? Let me know!
+                  </p>
+                  
+                  <textarea
+                    value={feedbackText}
+                    onChange={(e) => setFeedbackText(e.target.value)}
+                    placeholder="Tell me your thoughts..."
+                    disabled={isSendingFeedback}
+                    className="w-full h-32 bg-zinc-950 border border-zinc-800 rounded-xl p-4 text-white placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-none mb-4 transition-all disabled:opacity-50"
+                  />
+                  
+                  <button
+                    onClick={handleSendFeedback}
+                    disabled={!feedbackText.trim() || isSendingFeedback}
+                    className="w-full py-3 bg-white hover:bg-zinc-200 disabled:bg-zinc-800 disabled:text-zinc-500 text-black font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"
+                  >
+                    {isSendingFeedback ? (
+                      <>
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        Sending...
+                      </>
+                    ) : (
+                      'Send Feedback'
+                    )}
+                  </button>
+                  <p className="text-xs text-zinc-600 text-center mt-4">
+                    This will securely send your message to the developer.
+                  </p>
+                </>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
