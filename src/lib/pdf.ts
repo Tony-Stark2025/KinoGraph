@@ -5,10 +5,20 @@ export interface Panel {
   quote: string;
 }
 
+interface PDFExportOptions {
+  watermark: boolean;
+  exportQuality: 'standard' | 'high' | 'premium';
+}
+
 /**
  * Generates a multi-page PDF graphic novel from the stylized panels.
  */
-export async function generateGraphicNovelPDF(panels: Panel[], styleName: string, title: string) {
+export async function generateGraphicNovelPDF(
+  panels: Panel[],
+  styleName: string,
+  title: string,
+  options: PDFExportOptions,
+) {
   // Create a portrait A4 document
   const doc = new jsPDF({
     orientation: "portrait",
@@ -68,8 +78,13 @@ export async function generateGraphicNovelPDF(panels: Panel[], styleName: string
     doc.setDrawColor(255, 255, 255);
     doc.setLineWidth(1);
     doc.rect(margin - 1, yOffset - 1, contentWidth + 2, imgHeight + 2);
-    // Use FAST compression to keep PDF size small
-    doc.addImage(panel.image, 'JPEG', margin, yOffset, contentWidth, imgHeight, undefined, 'FAST');
+    const compression =
+      options.exportQuality === 'premium'
+        ? 'NONE'
+        : options.exportQuality === 'high'
+          ? 'MEDIUM'
+          : 'FAST';
+    doc.addImage(panel.image, 'JPEG', margin, yOffset, contentWidth, imgHeight, undefined, compression);
     
     yOffset += imgHeight + 12;
 
@@ -85,6 +100,19 @@ export async function generateGraphicNovelPDF(panels: Panel[], styleName: string
     
     // Advance Y offset based on the number of lines the quote took, plus padding for the next panel
     yOffset += (splitQuote.length * 7) + 25;
+  }
+
+  if (options.watermark) {
+    const pages = doc.getNumberOfPages();
+    for (let page = 1; page <= pages; page++) {
+      doc.setPage(page);
+      doc.setTextColor(120, 120, 120);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(10);
+      doc.text('Generated with KinoGraph Free Plan', pageWidth - margin, pageHeight - 10, {
+        align: 'right',
+      });
+    }
   }
 
   // Create a safe filename from the title

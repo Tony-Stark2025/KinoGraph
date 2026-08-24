@@ -1,504 +1,490 @@
-import { useState, useRef } from 'react';
-import { Upload, Film, Wand2, Download, Loader2, Image as ImageIcon, ChevronRight, MessageSquare, X, Check } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-import { analyzeVideo, stylizeFrame, VideoAnalysis, StoryBeat } from './lib/gemini';
-import { extractFrame, fileToBase64 } from './lib/video';
-import { generateGraphicNovelPDF, Panel } from './lib/pdf';
+import {FormEvent, useEffect, useMemo, useState} from 'react';
+import {Download, Loader2, Sparkles, Upload} from 'lucide-react';
+import {extractFrame, fileToBase64} from './lib/video';
+import {generateGraphicNovelPDF, Panel} from './lib/pdf';
+import {PlanDefinition, PlanKey} from '../productConfig';
+
+interface StoryBeat {
+  timestamp: number;
+  quote: string;
+  description: string;
+}
+
+interface VideoAnalysis {
+  title: string;
+  beats: StoryBeat[];
+  styles: {name: string; description: string; promptModifier: string}[];
+}
+
+interface ProductConfigResponse {
+  heroUseCase: {segment: string; onboardingMessage: string};
+  qualityBar: {
+    supportedFormats: string[];
+    targetProcessingSeconds: number;
+    outputConsistency: string;
+  };
+  planOrder: PlanKey[];
+  plans: Record<PlanKey, PlanDefinition>;
+}
+
+interface BillingUsageResponse {
+  usage: {analyses: number; stylizations: number; exports: number};
+  limits: {analyses: number; stylizations: number; exports: number};
+  plan: PlanDefinition;
+  month: string;
+}
 
 type AppState = 'IDLE' | 'ANALYZING' | 'STYLE_SELECTION' | 'GENERATING' | 'COMPLETE';
 
-const MAX_FILE_SIZE_MB = 20;
-
 export default function App() {
   const [appState, setAppState] = useState<AppState>('IDLE');
+  const [token, setToken] = useState<string | null>(null);
+  const [user, setUser] = useState<{email: string; plan: PlanKey} | null>(null);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('register');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+
+  const [productConfig, setProductConfig] = useState<ProductConfigResponse | null>(null);
+  const [usageData, setUsageData] = useState<BillingUsageResponse | null>(null);
+
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [analysis, setAnalysis] = useState<VideoAnalysis | null>(null);
   const [selectedStyle, setSelectedStyle] = useState<VideoAnalysis['styles'][0] | null>(null);
-  
-  // Progress tracking for generation phase
-  const [generationProgress, setGenerationProgress] = useState({ current: 0, total: 0, status: '' });
   const [generatedPanels, setGeneratedPanels] = useState<Panel[]>([]);
-  
+  const [status, setStatus] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Feedback Modal State
-  const [isFeedbackOpen, setIsFeedbackOpen] = useState(false);
-  const [feedbackText, setFeedbackText] = useState('');
-  const [isSendingFeedback, setIsSendingFeedback] = useState(false);
-  const [feedbackSuccess, setFeedbackSuccess] = useState(false);
+  const selectedPlan = useMemo(() => {
+    if (!user || !productConfig) return null;
+    return productConfig.plans[user.plan];
+  }, [productConfig, user]);
 
-  const handleSendFeedback = async () => {
-    if (!feedbackText.trim()) return;
-    
-    setIsSendingFeedback(true);
-    
-    try {
-      const response = await fetch('/api/feedback', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ feedback: feedbackText })
-      });
-      
-      const data = await response.json();
-      
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to send feedback');
-      }
-      
-      setFeedbackSuccess(true);
-      setTimeout(() => {
-        setIsFeedbackOpen(false);
-        setFeedbackText('');
-        setFeedbackSuccess(false);
-      }, 2500);
-    } catch (err: any) {
-      console.error(err);
-      alert(err.message || "Failed to send feedback. Please check server configuration.");
-    } finally {
-      setIsSendingFeedback(false);
+  const authHeaders = useMemo(() => {
+    return token ? {Authorization: 'Bearer ' + token} : {};
+  }, [token]);
+
+  async function apiJson<T>(url: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        'Content-Type': 'application/json',
+        ...authHeaders,
+        ...(init?.headers || {}),
+      },
+    });
+    const body = await response.json();
+    if (!response.ok) {
+      throw new Error(body.error || `Request failed: ${response.status}`);
     }
-  };
+    return body as T;
+  }
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  async function refreshUsage() {
+    if (!token) return;
+    const usage = await apiJson<BillingUsageResponse>('/api/billing/usage');
+    setUsageData(usage);
+  }
 
-    if (!file.type.startsWith('video/')) {
-      setError('Please upload a valid video file.');
-      return;
-    }
+  useEffect(() => {
+    apiJson<ProductConfigResponse>('/api/product/config')
+      .then(setProductConfig)
+      .catch((err) => setError(err.message));
+  }, []);
 
-    if (file.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
-      setError(`File is too large. Please upload a video under ${MAX_FILE_SIZE_MB}MB for this prototype.`);
-      return;
-    }
+  useEffect(() => {
+    refreshUsage().catch((err) => setError(err.message));
+  }, [token]);
 
+  async function handleAuthSubmit(e: FormEvent) {
+    e.preventDefault();
     setError(null);
+
+    try {
+      const endpoint = authMode === 'register' ? '/api/auth/register' : '/api/auth/login';
+      const payload: Record<string, unknown> = {
+        email: authEmail,
+        password: authPassword,
+      };
+      if (authMode === 'register') {
+        payload.plan = 'free';
+      }
+      const result = await apiJson<{token: string; user: {email: string; plan: PlanKey}}>(endpoint, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      setToken(result.token);
+      setUser(result.user);
+      setAuthPassword('');
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function changePlan(plan: PlanKey) {
+    try {
+      const result = await apiJson<{user: {email: string; plan: PlanKey}}>('/api/billing/subscribe', {
+        method: 'POST',
+        body: JSON.stringify({plan}),
+      });
+      setUser(result.user);
+      await refreshUsage();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  }
+
+  async function pollJob(jobId: string): Promise<any> {
+    for (let i = 0; i < 120; i++) {
+      const job = await apiJson<any>(`/api/jobs/${jobId}`);
+      if (job.status === 'completed') return job;
+      if (job.status === 'failed') {
+        throw new Error(job.error || 'Job failed');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error('Job timed out');
+  }
+
+  async function downloadImageAsDataUrl(url: string): Promise<string> {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('Failed to fetch generated artifact');
+    }
+    const blob = await response.blob();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  async function handleFileUpload(file: File) {
+    setError(null);
+
+    if (!token || !productConfig || !selectedPlan) {
+      setError('Sign in first to use generation.');
+      return;
+    }
+
+    if (!productConfig.qualityBar.supportedFormats.includes(file.type)) {
+      setError(`Unsupported format. Use: ${productConfig.qualityBar.supportedFormats.join(', ')}`);
+      return;
+    }
+
+    if (file.size > 20 * 1024 * 1024) {
+      setError('File exceeds 20MB upload limit.');
+      return;
+    }
+
+    const durationSeconds = await new Promise<number>((resolve, reject) => {
+      const video = document.createElement('video');
+      const url = URL.createObjectURL(file);
+      video.src = url;
+      video.onloadedmetadata = () => {
+        URL.revokeObjectURL(url);
+        resolve(video.duration);
+      };
+      video.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error('Unable to read uploaded video metadata.'));
+      };
+    });
+
+    if (durationSeconds > selectedPlan.maxVideoSeconds) {
+      setError(
+        `Your ${selectedPlan.name} plan supports up to ${selectedPlan.maxVideoSeconds}s. Uploaded: ${durationSeconds.toFixed(1)}s.`,
+      );
+      return;
+    }
+
     setVideoFile(file);
     setAppState('ANALYZING');
+    setStatus('Analyzing video...');
 
     try {
       const base64Video = await fileToBase64(file);
-      const result = await analyzeVideo(base64Video, file.type);
-      setAnalysis(result);
-      setAppState('STYLE_SELECTION');
-    } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : 'Failed to analyze video.');
-      setAppState('IDLE');
-    }
-  };
+      const {jobId} = await apiJson<{jobId: string}>('/api/jobs/analyze', {
+        method: 'POST',
+        body: JSON.stringify({
+          base64Video,
+          mimeType: file.type,
+          fileSizeBytes: file.size,
+          durationSeconds,
+        }),
+        headers: {
+          'Idempotency-Key': `analyze-${file.name}-${file.size}`,
+        },
+      });
 
-  const startGeneration = async (style: VideoAnalysis['styles'][0]) => {
+      const job = await pollJob(jobId);
+      setAnalysis(job.result as VideoAnalysis);
+      setAppState('STYLE_SELECTION');
+      setStatus('Analysis complete. Choose style.');
+      await refreshUsage();
+    } catch (err) {
+      setError((err as Error).message);
+      setAppState('IDLE');
+      setStatus('');
+    }
+  }
+
+  async function generatePanels(style: VideoAnalysis['styles'][0]) {
     if (!videoFile || !analysis) return;
-    
+
     setSelectedStyle(style);
     setAppState('GENERATING');
     setGeneratedPanels([]);
-    setGenerationProgress({ current: 0, total: analysis.beats.length, status: 'Initializing...' });
-
-    const panels: Panel[] = [];
 
     try {
+      const panels: Panel[] = [];
+
       for (let i = 0; i < analysis.beats.length; i++) {
         const beat = analysis.beats[i];
-        
-        setGenerationProgress({ 
-          current: i + 1, 
-          total: analysis.beats.length, 
-          status: `Extracting frame at ${beat.timestamp}s...` 
-        });
-        
-        // 1. Extract the raw frame from the video
+        setStatus(`Generating panel ${i + 1}/${analysis.beats.length}...`);
+
         const rawFrameBase64 = await extractFrame(videoFile, beat.timestamp);
-        
-        setGenerationProgress({ 
-          current: i + 1, 
-          total: analysis.beats.length, 
-          status: `Applying ${style.name} aesthetic...` 
+        const {jobId} = await apiJson<{jobId: string}>('/api/jobs/stylize', {
+          method: 'POST',
+          body: JSON.stringify({
+            base64Image: rawFrameBase64,
+            stylePromptModifier: style.promptModifier,
+          }),
+          headers: {
+            'Idempotency-Key': `stylize-${analysis.title}-${i}-${style.name}`,
+          },
         });
 
-        // 2. Send to Nano Banana for restyling
-        const stylizedFrame = await stylizeFrame(rawFrameBase64, style.promptModifier);
-        
-        const newPanel = { image: stylizedFrame, quote: beat.quote };
-        panels.push(newPanel);
-        
-        // Update state progressively so user sees panels appear one by one
+        const job = await pollJob(jobId);
+        const dataUrl = await downloadImageAsDataUrl(job.result.signedUrl);
+
+        panels.push({image: dataUrl, quote: beat.quote});
         setGeneratedPanels([...panels]);
       }
-      
+
+      await refreshUsage();
+      setStatus('Panels generated. Ready to export.');
       setAppState('COMPLETE');
     } catch (err) {
-      console.error(err);
-      setError(err instanceof Error ? err.message : 'Failed to generate panels.');
-      setAppState('STYLE_SELECTION'); // Go back so they can try again
+      setError((err as Error).message);
+      setAppState('STYLE_SELECTION');
+      setStatus('');
     }
-  };
+  }
 
-  const handleDownloadPDF = () => {
-    if (generatedPanels.length > 0 && selectedStyle && analysis) {
-      generateGraphicNovelPDF(generatedPanels, selectedStyle.name, analysis.title);
+  async function exportPdf() {
+    if (!analysis || !selectedStyle || generatedPanels.length === 0) return;
+
+    try {
+      const exportInfo = await apiJson<{watermark: boolean; exportQuality: 'standard' | 'high' | 'premium'}>(
+        '/api/exports/consume',
+        {
+          method: 'POST',
+          body: JSON.stringify({panelCount: generatedPanels.length}),
+        },
+      );
+
+      await refreshUsage();
+      generateGraphicNovelPDF(generatedPanels, selectedStyle.name, analysis.title, {
+        watermark: exportInfo.watermark,
+        exportQuality: exportInfo.exportQuality,
+      });
+    } catch (err) {
+      setError((err as Error).message);
     }
-  };
+  }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-zinc-100 font-sans selection:bg-indigo-500/30">
-      {/* Header */}
-      <header className="border-b border-zinc-800 bg-[#0a0a0a]/80 backdrop-blur-md sticky top-0 z-10">
-        <div className="max-w-5xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Film className="w-6 h-6 text-indigo-400" />
-            <span className="text-xl font-bold tracking-tight">KinoGraph</span>
-          </div>
-          {appState !== 'IDLE' && (
-            <button 
-              onClick={() => {
-                setAppState('IDLE');
-                setVideoFile(null);
-                setAnalysis(null);
-                setGeneratedPanels([]);
-              }}
-              className="text-sm text-zinc-400 hover:text-white transition-colors"
-            >
-              Start Over
-            </button>
-          )}
-        </div>
-      </header>
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 p-6 md:p-10">
+      <div className="max-w-5xl mx-auto space-y-8">
+        <header className="space-y-2">
+          <h1 className="text-4xl font-bold">KinoGraph</h1>
+          <p className="text-zinc-400">Production-grade storyboard generation for monetizable creative workflows.</p>
+        </header>
 
-      <main className="max-w-5xl mx-auto px-6 py-12">
-        <AnimatePresence mode="wait">
-          
-          {/* STATE: IDLE (Upload) */}
-          {appState === 'IDLE' && (
-            <motion.div 
-              key="idle"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0, y: -20 }}
-              className="flex flex-col items-center justify-center w-full"
-            >
-              {/* Hero Section */}
-              <div className="text-center max-w-4xl mx-auto mt-12 mb-16 px-4">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/10 text-indigo-400 text-sm font-medium mb-8 border border-indigo-500/20">
-                  <Wand2 className="w-4 h-4" />
-                  <span>AI-Powered Visual Storytelling</span>
-                </div>
-                <h1 className="text-5xl md:text-7xl font-bold tracking-tight mb-8 leading-tight">
-                  Turn Videos Into <br/>
-                  <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
-                    Graphic Novels
-                  </span>
-                </h1>
-                <p className="text-lg md:text-xl text-zinc-400 max-w-2xl mx-auto leading-relaxed">
-                  Upload a clip, choose your aesthetic, and let our AI transform your story into a beautifully illustrated, downloadable comic book.
-                </p>
-              </div>
-
-              {/* Upload Dropzone */}
-              <div className="w-full max-w-2xl mx-auto mb-24 px-4">
-                <div 
-                  onClick={() => fileInputRef.current?.click()}
-                  className="relative group cursor-pointer"
-                >
-                  <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 via-purple-500 to-pink-500 rounded-[2rem] blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
-                  <div className="relative bg-zinc-900/80 backdrop-blur-xl border border-zinc-800 hover:border-zinc-700 rounded-[2rem] p-12 flex flex-col items-center justify-center transition-all">
-                    <div className="w-20 h-20 bg-zinc-800/50 group-hover:bg-indigo-500/20 rounded-full flex items-center justify-center mb-6 transition-colors border border-zinc-700/50 group-hover:border-indigo-500/50 shadow-2xl">
-                      <Upload className="w-10 h-10 text-zinc-400 group-hover:text-indigo-400 transition-colors" />
-                    </div>
-                    <h3 className="text-2xl font-semibold mb-3 text-white">Upload your video</h3>
-                    <p className="text-zinc-500 text-center max-w-sm">
-                      Drag and drop or click to browse. <br/>
-                      <span className="text-sm mt-2 block">MP4, WebM, or MOV (Max {MAX_FILE_SIZE_MB}MB)</span>
-                    </p>
-                  </div>
-                  <input 
-                    type="file" 
-                    ref={fileInputRef}
-                    onChange={handleFileUpload}
-                    accept="video/*" 
-                    className="hidden" 
-                  />
-                </div>
-
-                {error && (
-                  <motion.div 
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="mt-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-sm text-center"
-                  >
-                    {error}
-                  </motion.div>
-                )}
-              </div>
-
-              {/* Sliding Marquee Section */}
-              <div className="w-full overflow-hidden relative py-10 before:absolute before:left-0 before:top-0 before:z-10 before:h-full before:w-32 before:bg-gradient-to-r before:from-[#0a0a0a] before:to-transparent after:absolute after:right-0 after:top-0 after:z-10 after:h-full after:w-32 after:bg-gradient-to-l after:from-[#0a0a0a] after:to-transparent">
-                <div className="flex w-[200%] animate-marquee hover:[animation-play-state:paused]">
-                  {/* First set of images */}
-                  <div className="flex w-1/2 justify-around items-center gap-6 px-3">
-                    {[
-                      { seed: "cyberpunk", quote: "The neon city never sleeps." },
-                      { seed: "noir", quote: "Shadows hide the deepest secrets." },
-                      { seed: "manga", quote: "I have to keep moving forward!" },
-                      { seed: "fantasy", quote: "The ancient sword glowed brightly." },
-                      { seed: "scifi", quote: "Hyperdrive engaged. Hold on." }
-                    ].map((item, i) => (
-                      <div key={i} className="relative w-72 md:w-96 aspect-[4/3] rounded-2xl overflow-hidden border border-zinc-800 flex-shrink-0 group">
-                        <img src={`https://picsum.photos/seed/${item.seed}/800/600`} alt="Example" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" referrerPolicy="no-referrer" />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent flex items-end p-6">
-                          <p className="text-white font-serif italic text-lg border-l-2 border-indigo-500 pl-3">"{item.quote}"</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                  {/* Duplicate set for seamless looping */}
-                  <div className="flex w-1/2 justify-around items-center gap-6 px-3">
-                    {[
-                      { seed: "cyberpunk", quote: "The neon city never sleeps." },
-                      { seed: "noir", quote: "Shadows hide the deepest secrets." },
-                      { seed: "manga", quote: "I have to keep moving forward!" },
-                      { seed: "fantasy", quote: "The ancient sword glowed brightly." },
-                      { seed: "scifi", quote: "Hyperdrive engaged. Hold on." }
-                    ].map((item, i) => (
-                      <div key={`dup-${i}`} className="relative w-72 md:w-96 aspect-[4/3] rounded-2xl overflow-hidden border border-zinc-800 flex-shrink-0 group">
-                        <img src={`https://picsum.photos/seed/${item.seed}/800/600`} alt="Example" className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105" referrerPolicy="no-referrer" />
-                        <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/20 to-transparent flex items-end p-6">
-                          <p className="text-white font-serif italic text-lg border-l-2 border-indigo-500 pl-3">"{item.quote}"</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {/* STATE: ANALYZING */}
-          {appState === 'ANALYZING' && (
-            <motion.div 
-              key="analyzing"
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 1.05 }}
-              className="flex flex-col items-center justify-center py-32"
-            >
-              <div className="relative w-24 h-24 mb-8">
-                <div className="absolute inset-0 border-t-2 border-indigo-500 rounded-full animate-spin"></div>
-                <div className="absolute inset-2 border-r-2 border-purple-500 rounded-full animate-spin" style={{ animationDirection: 'reverse', animationDuration: '1.5s' }}></div>
-                <Film className="absolute inset-0 m-auto w-8 h-8 text-zinc-400" />
-              </div>
-              <h2 className="text-2xl font-semibold mb-2">Watching your video...</h2>
-              <p className="text-zinc-500">Analyzing the story to find the perfect narrative moments and aesthetic vibes.</p>
-            </motion.div>
-          )}
-
-          {/* STATE: STYLE SELECTION */}
-          {appState === 'STYLE_SELECTION' && analysis && (
-            <motion.div 
-              key="style-selection"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -20 }}
-            >
-              <div className="mb-12">
-                <h2 className="text-3xl font-bold mb-4">Choose Your Aesthetic</h2>
-                <p className="text-zinc-400">
-                  We found {analysis.beats.length} key narrative moments. How should we draw them?
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                {analysis.styles.map((style, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => startGeneration(style)}
-                    className="text-left p-6 rounded-2xl border border-zinc-800 bg-zinc-900/50 hover:bg-zinc-800 hover:border-indigo-500/50 transition-all group flex flex-col h-full"
-                  >
-                    <div className="w-12 h-12 bg-zinc-800 group-hover:bg-indigo-500/20 rounded-full flex items-center justify-center mb-6 transition-colors">
-                      <Wand2 className="w-6 h-6 text-zinc-400 group-hover:text-indigo-400" />
-                    </div>
-                    <h3 className="text-xl font-bold mb-3 text-white">{style.name}</h3>
-                    <p className="text-zinc-400 text-sm leading-relaxed flex-grow">
-                      {style.description}
-                    </p>
-                    <div className="mt-6 flex items-center text-sm font-medium text-indigo-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                      Generate <ChevronRight className="w-4 h-4 ml-1" />
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </motion.div>
-          )}
-
-          {/* STATE: GENERATING & COMPLETE */}
-          {(appState === 'GENERATING' || appState === 'COMPLETE') && (
-            <motion.div 
-              key="generating"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="space-y-12"
-            >
-              {/* Header / Progress */}
-              <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 pb-8 border-b border-zinc-800">
-                <div>
-                  <h2 className="text-3xl font-bold mb-2">
-                    {appState === 'GENERATING' ? 'Drawing Panels...' : analysis?.title || 'Your Graphic Novel'}
-                  </h2>
-                  <p className="text-zinc-400">
-                    {appState === 'GENERATING' 
-                      ? generationProgress.status 
-                      : `Successfully generated ${generatedPanels.length} panels in ${selectedStyle?.name} style.`}
-                  </p>
-                </div>
-                
-                {appState === 'GENERATING' ? (
-                  <div className="flex items-center gap-4 bg-zinc-900 px-6 py-3 rounded-full border border-zinc-800">
-                    <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />
-                    <span className="text-sm font-medium">
-                      Panel {generationProgress.current} of {generationProgress.total}
-                    </span>
-                  </div>
-                ) : (
-                  <button 
-                    onClick={handleDownloadPDF}
-                    className="flex items-center gap-2 bg-white text-black px-6 py-3 rounded-full font-semibold hover:bg-zinc-200 transition-colors"
-                  >
-                    <Download className="w-5 h-5" />
-                    Download PDF
-                  </button>
-                )}
-              </div>
-
-              {/* Panels Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {generatedPanels.map((panel, idx) => (
-                  <motion.div 
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.5 }}
-                    key={idx} 
-                    className="bg-zinc-900 rounded-2xl overflow-hidden border border-zinc-800 flex flex-col"
-                  >
-                    <div className="relative aspect-[4/3] bg-zinc-950">
-                      <img 
-                        src={panel.image} 
-                        alt={`Panel ${idx + 1}`}
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                    <div className="p-6 flex-grow flex items-center">
-                      <p className="text-lg font-serif italic text-zinc-300 border-l-2 border-indigo-500 pl-4">
-                        "{panel.quote}"
-                      </p>
-                    </div>
-                  </motion.div>
-                ))}
-
-                {/* Placeholder for currently generating panel */}
-                {appState === 'GENERATING' && generatedPanels.length < generationProgress.total && (
-                  <motion.div 
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className="bg-zinc-900/50 rounded-2xl border border-zinc-800 border-dashed flex flex-col items-center justify-center aspect-[4/3] p-6"
-                  >
-                    <ImageIcon className="w-12 h-12 text-zinc-700 mb-4 animate-pulse" />
-                    <p className="text-zinc-500 text-sm font-medium">Drawing next panel...</p>
-                  </motion.div>
-                )}
-              </div>
-            </motion.div>
-          )}
-
-        </AnimatePresence>
-      </main>
-
-      {/* Feedback Button */}
-      <button
-        onClick={() => setIsFeedbackOpen(true)}
-        className="fixed bottom-6 right-6 bg-zinc-800 hover:bg-zinc-700 text-white rounded-full p-4 shadow-2xl border border-zinc-700 transition-all hover:scale-105 z-40 flex items-center gap-2 group"
-      >
-        <MessageSquare className="w-5 h-5 text-indigo-400 group-hover:text-indigo-300" />
-        <span className="font-medium hidden md:inline pr-2">Feedback</span>
-      </button>
-
-      {/* Feedback Modal */}
-      <AnimatePresence>
-        {isFeedbackOpen && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-zinc-900 border border-zinc-800 rounded-3xl p-6 w-full max-w-md shadow-2xl relative"
-            >
-              <button
-                onClick={() => setIsFeedbackOpen(false)}
-                className="absolute top-6 right-6 text-zinc-500 hover:text-white transition-colors"
-              >
-                <X className="w-5 h-5" />
-              </button>
-              
-              <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 bg-indigo-500/20 rounded-lg">
-                  <MessageSquare className="w-5 h-5 text-indigo-400" />
-                </div>
-                <h3 className="text-xl font-bold text-white">Send Feedback</h3>
-              </div>
-              
-              {feedbackSuccess ? (
-                <motion.div 
-                  initial={{ opacity: 0, scale: 0.9 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  className="flex flex-col items-center justify-center py-8"
-                >
-                  <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center mb-4">
-                    <Check className="w-8 h-8 text-green-400" />
-                  </div>
-                  <h4 className="text-white font-bold text-xl">Feedback Sent!</h4>
-                  <p className="text-zinc-400 text-sm mt-2 text-center">
-                    Thank you for helping improve KinoGraph.
-                  </p>
-                </motion.div>
-              ) : (
-                <>
-                  <p className="text-zinc-400 text-sm mb-6">
-                    What do you think of KinoGraph? Found a bug or have a feature request? Let me know!
-                  </p>
-                  
-                  <textarea
-                    value={feedbackText}
-                    onChange={(e) => setFeedbackText(e.target.value)}
-                    placeholder="Tell me your thoughts..."
-                    disabled={isSendingFeedback}
-                    className="w-full h-32 bg-zinc-950 border border-zinc-800 rounded-xl p-4 text-white placeholder:text-zinc-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-none mb-4 transition-all disabled:opacity-50"
-                  />
-                  
-                  <button
-                    onClick={handleSendFeedback}
-                    disabled={!feedbackText.trim() || isSendingFeedback}
-                    className="w-full py-3 bg-white hover:bg-zinc-200 disabled:bg-zinc-800 disabled:text-zinc-500 text-black font-semibold rounded-xl transition-colors flex items-center justify-center gap-2"
-                  >
-                    {isSendingFeedback ? (
-                      <>
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                        Sending...
-                      </>
-                    ) : (
-                      'Send Feedback'
-                    )}
-                  </button>
-                  <p className="text-xs text-zinc-600 text-center mt-4">
-                    This will securely send your message to the developer.
-                  </p>
-                </>
-              )}
-            </motion.div>
-          </div>
+        {productConfig && (
+          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-3">
+            <h2 className="text-xl font-semibold">Hero use case: {productConfig.heroUseCase.segment}</h2>
+            <p className="text-zinc-300">{productConfig.heroUseCase.onboardingMessage}</p>
+            <div className="text-sm text-zinc-400 space-y-1">
+              <p>Supported formats: {productConfig.qualityBar.supportedFormats.join(', ')}</p>
+              <p>Target processing time: ≤ {productConfig.qualityBar.targetProcessingSeconds} seconds per project</p>
+              <p>Output consistency bar: {productConfig.qualityBar.outputConsistency}</p>
+            </div>
+          </section>
         )}
-      </AnimatePresence>
+
+        {!token ? (
+          <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5">
+            <h2 className="text-xl font-semibold mb-4">Create account to start</h2>
+            <form className="grid gap-3 md:grid-cols-3" onSubmit={handleAuthSubmit}>
+              <input
+                className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-2"
+                placeholder="Email"
+                type="email"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                required
+              />
+              <input
+                className="rounded-xl border border-zinc-700 bg-zinc-950 px-4 py-2"
+                placeholder="Password (8+ chars)"
+                type="password"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                minLength={8}
+                required
+              />
+              <button className="rounded-xl bg-indigo-500 px-4 py-2 font-semibold hover:bg-indigo-400" type="submit">
+                {authMode === 'register' ? 'Register' : 'Login'}
+              </button>
+            </form>
+            <button
+              className="mt-3 text-sm text-zinc-400 hover:text-zinc-200"
+              onClick={() => setAuthMode(authMode === 'register' ? 'login' : 'register')}
+            >
+              {authMode === 'register' ? 'Already have an account? Login' : 'Need an account? Register'}
+            </button>
+          </section>
+        ) : (
+          <>
+            <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h2 className="text-xl font-semibold">Account</h2>
+                  <p className="text-zinc-400 text-sm">{user?.email}</p>
+                </div>
+                <button
+                  className="text-sm text-zinc-400 hover:text-zinc-100"
+                  onClick={() => {
+                    setToken(null);
+                    setUser(null);
+                    setUsageData(null);
+                  }}
+                >
+                  Sign out
+                </button>
+              </div>
+
+              {productConfig && (
+                <div className="grid md:grid-cols-3 gap-3">
+                  {productConfig.planOrder.map((planKey) => {
+                    const plan = productConfig.plans[planKey];
+                    const active = user?.plan === plan.key;
+                    return (
+                      <button
+                        key={plan.key}
+                        onClick={() => changePlan(plan.key)}
+                        className={`text-left rounded-xl border p-4 transition ${
+                          active
+                            ? 'border-indigo-400 bg-indigo-500/10'
+                            : 'border-zinc-700 bg-zinc-950 hover:border-zinc-500'
+                        }`}
+                      >
+                        <div className="font-semibold">{plan.name}</div>
+                        <div className="text-sm text-zinc-400">${plan.monthlyPriceUsd}/month</div>
+                        <div className="text-xs text-zinc-500 mt-2">
+                          {plan.maxVideoSeconds}s max video · {plan.styleOptions} style options · {plan.exportQuality} export
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+
+              {usageData && (
+                <div className="grid md:grid-cols-3 gap-3 text-sm">
+                  <div className="rounded-xl border border-zinc-700 p-3">
+                    Analyses: {usageData.usage.analyses}/{usageData.limits.analyses}
+                  </div>
+                  <div className="rounded-xl border border-zinc-700 p-3">
+                    Stylizations: {usageData.usage.stylizations}/{usageData.limits.stylizations}
+                  </div>
+                  <div className="rounded-xl border border-zinc-700 p-3">
+                    Exports: {usageData.usage.exports}/{usageData.limits.exports}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
+              <h2 className="text-xl font-semibold">1) Upload video</h2>
+              <label className="block rounded-xl border border-dashed border-zinc-700 bg-zinc-950 p-6 cursor-pointer hover:border-zinc-500">
+                <div className="flex items-center gap-3">
+                  <Upload className="w-5 h-5" />
+                  <span>Choose video (max 20MB)</span>
+                </div>
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="video/mp4,video/webm,video/quicktime"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      handleFileUpload(file).catch((err) => setError((err as Error).message));
+                    }
+                  }}
+                />
+              </label>
+              {videoFile && <p className="text-sm text-zinc-400">Selected: {videoFile.name}</p>}
+              {status && (
+                <p className="text-sm text-indigo-300 flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" /> {status}
+                </p>
+              )}
+            </section>
+
+            {appState === 'STYLE_SELECTION' && analysis && (
+              <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
+                <h2 className="text-xl font-semibold">2) Choose style</h2>
+                <p className="text-zinc-400 text-sm">{analysis.title} · {analysis.beats.length} beats</p>
+                <div className="grid md:grid-cols-3 gap-3">
+                  {analysis.styles.map((style) => (
+                    <button
+                      key={style.name}
+                      onClick={() => generatePanels(style)}
+                      className="rounded-xl border border-zinc-700 bg-zinc-950 p-4 text-left hover:border-indigo-400"
+                    >
+                      <div className="font-semibold flex items-center gap-2">
+                        <Sparkles className="w-4 h-4" /> {style.name}
+                      </div>
+                      <p className="text-sm text-zinc-400 mt-2">{style.description}</p>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {(appState === 'GENERATING' || appState === 'COMPLETE') && (
+              <section className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-semibold">3) Generated panels</h2>
+                  <button
+                    className="rounded-xl bg-white text-black px-4 py-2 font-semibold disabled:bg-zinc-700 disabled:text-zinc-400"
+                    onClick={exportPdf}
+                    disabled={appState !== 'COMPLETE'}
+                  >
+                    <span className="inline-flex items-center gap-2">
+                      <Download className="w-4 h-4" /> Export PDF
+                    </span>
+                  </button>
+                </div>
+
+                <div className="grid md:grid-cols-2 gap-4">
+                  {generatedPanels.map((panel, idx) => (
+                    <article key={idx} className="rounded-xl border border-zinc-700 overflow-hidden bg-zinc-950">
+                      <img src={panel.image} alt={`Panel ${idx + 1}`} className="w-full object-cover aspect-[4/3]" />
+                      <p className="p-4 text-zinc-300 italic">"{panel.quote}"</p>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            )}
+          </>
+        )}
+
+        {error && <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-red-300">{error}</div>}
+      </div>
     </div>
   );
 }
