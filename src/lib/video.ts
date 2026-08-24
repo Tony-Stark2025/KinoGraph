@@ -5,9 +5,9 @@
 export async function extractFrame(videoFile: File, timestampSeconds: number): Promise<string> {
   return new Promise((resolve, reject) => {
     const video = document.createElement('video');
-    const objectUrl = URL.createObjectURL(videoFile);
+    const objectUrl = toSafeBlobUrl(URL.createObjectURL(videoFile));
     
-    video.src = objectUrl;
+    video.setAttribute('src', objectUrl);
     video.crossOrigin = 'anonymous';
     video.muted = true;
     video.playsInline = true;
@@ -79,4 +79,12 @@ export function fileToBase64(file: File): Promise<string> {
     };
     reader.onerror = reject;
   });
+}
+
+function toSafeBlobUrl(url: string): string {
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'blob:') {
+    throw new Error('Unexpected object URL protocol.');
+  }
+  return parsed.toString();
 }

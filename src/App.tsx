@@ -179,8 +179,8 @@ export default function App() {
 
     const durationSeconds = await new Promise<number>((resolve, reject) => {
       const video = document.createElement('video');
-      const url = URL.createObjectURL(file);
-      video.src = url;
+      const url = toSafeBlobUrl(URL.createObjectURL(file));
+      video.setAttribute('src', url);
       video.onloadedmetadata = () => {
         URL.revokeObjectURL(url);
         resolve(video.duration);
@@ -196,6 +196,14 @@ export default function App() {
         `Your ${selectedPlan.name} plan supports up to ${selectedPlan.maxVideoSeconds}s. Uploaded: ${durationSeconds.toFixed(1)}s.`,
       );
       return;
+    }
+
+    function toSafeBlobUrl(url: string): string {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'blob:') {
+        throw new Error('Unexpected object URL protocol.');
+      }
+      return parsed.toString();
     }
 
     setVideoFile(file);

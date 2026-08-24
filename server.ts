@@ -73,6 +73,7 @@ const jobQueue: string[] = [];
 let isProcessingQueue = false;
 
 const ipRateWindows = new Map<string, {count: number; windowStart: number}>();
+const loginRateWindows = new Map<string, {count: number; windowStart: number}>();
 
 let resendClient: Resend | null = null;
 
@@ -168,6 +169,26 @@ function rateLimit(req: Request, res: Response, next: NextFunction) {
 
   if (current.count >= maxRequests) {
     return res.status(429).json({error: 'Rate limit exceeded'});
+  }
+
+  current.count += 1;
+  next();
+}
+
+function loginRateLimit(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip || 'unknown';
+  const now = Date.now();
+  const windowMs = 15 * 60 * 1000;
+  const maxRequests = 20;
+
+  const current = loginRateWindows.get(ip);
+  if (!current || now - current.windowStart > windowMs) {
+    loginRateWindows.set(ip, {count: 1, windowStart: now});
+    return next();
+  }
+
+  if (current.count >= maxRequests) {
+    return res.status(429).json({error: 'Too many login attempts. Please try again later.'});
   }
 
   current.count += 1;
@@ -460,7 +481,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/auth/login', (req, res) => {
+  app.post('/api/auth/login', loginRateLimit, (req, res) => {
     try {
       const email = assertString(req.body?.email, 'email', 5, 120).toLowerCase();
       const password = assertString(req.body?.password, 'password', 8, 120);
@@ -743,7 +764,7 @@ async function startServer() {
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.get('*', rateLimit, (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
