@@ -1,20 +1,53 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# 🎬 KinoGraph: AI Video Knowledge Extraction & Cinematic Summarizer
 
-# Run and deploy your AI Studio app
+[![React](https://img.shields.io/badge/React-18-61DAFB.svg?logo=react&logoColor=black)](https://react.dev)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Google Gemini Multimodal](https://img.shields.io/badge/Gemini-Multimodal%20Video-4285F4.svg?logo=google&logoColor=white)](https://ai.google.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-This contains everything you need to run your app locally.
+**KinoGraph** extracts the essence, structure, and actionable knowledge from long-form video content using Gemini multimodal reasoning.
 
-View your app in AI Studio: https://ai.studio/apps/314465e4-7862-4918-b95f-0bf9ec17de8e
+---
 
-## Run Locally
+## 🌟 Capabilities
 
-**Prerequisites:**  Node.js
+- 🎞️ **Multimodal Video Understanding:** Ingests video timestamps, keyframes, and transcripts to build comprehensive knowledge graphs.
+- 📑 **Chapterization & Key Insights:** Automatically generates timestamped topic chapters, executive briefs, and takeaways.
+- 🔍 **Interactive Video Search:** Query specific visual moments or spoken concepts across the video timeline.
 
+---
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## 🛠️ Tech Stack
+
+- **Frontend:** React 18, TypeScript, Tailwind CSS
+- **Backend:** Node.js Server (`server.ts`)
+- **AI Engine:** Google Gemini Multimodal API
+- **Build System:** Vite
+
+---
+
+## 🚀 Setup & Execution
+
+1. **Clone repository:**
+   ```bash
+   git clone https://github.com/Tony-Stark2025/KinoGraph.git
+   cd KinoGraph
+   npm install
+   ```
+
+2. **Setup environment variables:**
+   ```bash
+   cp .env.example .env.local
+   # Add your GEMINI_API_KEY
+   ```
+
+3. **Start app:**
+   ```bash
+   npm run dev
+   ```
+
+---
+
+## 📄 License
+
+Licensed under the MIT License - see the [LICENSE](LICENSE) file.
